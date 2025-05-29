@@ -1,0 +1,623 @@
+import { useState, useRef, useEffect, ChangeEvent } from "react";
+import * as pdfjsLib from "pdfjs-dist/build/pdf";
+import "pdfjs-dist/build/pdf.worker.entry";
+import FACTURA from "./FACTURA_AVON.PDF";
+import { postCoordenadas } from "src/services/coordenadas.service";
+import { Box, Button, Container, Switch, Table, TableBody, TableCell, TableContainer, TableHead, TableRow } from "@mui/material";
+import { styled } from "@mui/styles";
+import * as React from 'react';
+import * as XLSX from 'xlsx';
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+
+
+const VisuallyHiddenInput = styled('input')({
+    clip: 'rect(0 0 0 0)',
+    clipPath: 'inset(50%)',
+    height: 1,
+    overflow: 'hidden',
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    whiteSpace: 'nowrap',
+    width: 1,
+});
+
+
+const PDFSelector = () => {
+    const [pdf, setPdf] = useState(null);
+    const [pageNumber, setPageNumber] = useState(1);
+    const [totalPages, setTotalPages] = useState(0);
+    const [rects, setRects] = useState([]);
+    // const [currentRect, setCurrentRect] = useState(null);
+    const currentRect = useRef(null);
+
+    const pdfCanvasRef = useRef(null);
+    const containerRef = useRef(null);
+    const renderTaskRef = useRef(null);
+    const [scale, setScale] = useState(1);
+    const [file, setFile] = useState(null);
+    const [base64, setBase64] = useState("");
+
+    const [verCoordenadas, setVerCoordenadas] = useState([]);
+    const [tableData, setTableData] = useState([]);
+    const [fijasData, setFijasData] = useState([]);
+    const [variableFijas, setVariableFija] = useState([]);
+    const [variableTabla, setVariableTabla] = useState([]);
+    const [activaVariableTabla, setactivaVariableTabla] = useState(false);
+    const [activaVariableFijas, setactivaVariableFijas] = useState(false);
+    const [checked, setChecked] = useState(false);
+    const alpha = 1; // Define un valor por defecto
+    const pdfImageRef = useRef(null); // Nuevo ref para la imagen del PDF
+    const animationFrame = useRef(null); // Ref para requestAnimationFrame
+
+    const handleExport = (data) => {
+        try {
+            // console.log(data, "DAta a enviar al excel mnsbjdkhsjkdhdsjk")
+            const ws = XLSX.utils.json_to_sheet(data);
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Datos');
+            XLSX.writeFile(wb, 'datos.xlsx');
+
+        } catch (error) {
+            console.error('Error al exportar a Excel:', error);
+            // Puedes agregar aquí un manejo de errores más específico, como mostrar un mensaje al usuario.
+        }
+    };
+
+   
+
+    
+
+    const handleFileChange = (e) => {
+        if (e.target.files && e.target.files[0]) {
+            const selectedFile = e.target.files[0];
+            setFile(selectedFile);
+
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64Data = reader.result.split(',')[1];
+                setBase64(base64Data);
+
+                try {
+                    // Convertir Base64 a Blob
+                    const byteCharacters = atob(base64Data);
+                    const byteNumbers = new Array(byteCharacters.length)
+                        .fill(0)
+                        .map((_, i) => byteCharacters.charCodeAt(i));
+                    const byteArray = new Uint8Array(byteNumbers);
+                    const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+                    // Crear una URL del Blob para vista previa
+                    const pdfUrl = URL.createObjectURL(blob);
+                    console.log("PDF URL Generado:", pdfUrl);
+
+                    // Guardar el archivo convertido en el estado
+                    setFile(pdfUrl);  // Aquí guardamos la URL para que sea accesible en la vista
+                    loadPdf(pdfUrl)
+                } catch (error) {
+                    console.error("Error al convertir Base64 a PDF:", error);
+                }
+            };
+            reader.readAsDataURL(selectedFile);
+        }
+    };
+
+    const drawRectangles = (context, rects, color) => {
+        if (!context) return;  // Evita errores si el contexto no está disponible
+        // context.strokeStyle = color; //Esto solo dibuja el borde 
+        context.fillStyle = color; //  fillStyle para rellenar el área del recuadro
+        // context.lineWidth = 2;
+        
+        context.globalAlpha = alpha;
+        rects.forEach(rect => {
+            const [startY, startX, endY, endX] = rect;
+            // context.strokeRect(startX * scale, startY * scale, (endX - startX) * scale, (endY - startY) * scale);
+            context.fillRect(startX * scale, startY * scale, (endX - startX) * scale, (endY - startY) * scale);
+        });
+        context.globalAlpha = 1; // Restablecer la transparencia a 1 para futuras operaciones de dibujo
+    };
+
+    const renderPage = async (pdfDoc, pageNum) => {
+        const page = await pdfDoc.getPage(pageNum);
+        const container = containerRef.current;
+        const viewport = page.getViewport({ scale: 1 });
+
+        const scaleFactor = Math.min(
+            container.clientWidth / viewport.width,
+            container.clientHeight / viewport.height
+        );
+        setScale(scaleFactor);
+
+        const scaledViewport = page.getViewport({ scale: scaleFactor });
+        const canvas = pdfCanvasRef.current;
+        const context = canvas.getContext("2d");
+
+        if (renderTaskRef.current) {
+            renderTaskRef.current.cancel();
+        }
+
+        // Limpiar el canvas antes de renderizar el PDF
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        canvas.width = scaledViewport.width;
+        canvas.height = scaledViewport.height;
+
+        const renderContext = { canvasContext: context, viewport: scaledViewport };
+        renderTaskRef.current = page.render(renderContext);
+        // console.log(e.clientX, e.clientY, left, top, "VER COORDENADAS-------------", endX, endY)
+        
+        try {
+            await renderTaskRef.current.promise;
+            // Guardar la imagen del PDF renderizado
+            pdfImageRef.current = pdfCanvasRef.current.toDataURL();
+
+             // Dibujar los rectángulos después de renderizar el PDF
+            drawRectangles(context, variableFijas, 'rgba(0, 0, 255, 0.5)',1); // Rectángulos fijos en azul
+            drawRectangles(context, variableTabla, 'rgba(0, 255, 0, 0.3)',1); // Rectángulos de tabla en verde
+            console.log("Página renderizada correctamente");
+
+            drawTemporaryRectangles(); // Llamar para dibujar inicial
+            
+        } catch (error) {
+            if (error.name !== "RenderingCancelledException") {
+                console.error("Error al renderizar la página:", error);
+            }
+        }
+    };
+
+    const handleMouseMove = (e) => {
+        if (!currentRect.current) return;
+
+        const { left, top } = pdfCanvasRef.current.getBoundingClientRect();
+        const endX = (e.clientX - left) / scale;
+        const endY = (e.clientY - top) / scale;
+
+        currentRect.current = { ...currentRect.current, endX, endY };
+
+        // Dibujar el recuadro guía en tiempo real
+        dibujarRecuadroGuia(pdfCanvasRef.current.getContext("2d"), currentRect.current.startX, currentRect.current.startY, currentRect.current.endX, currentRect.current.endY, scale);
+
+
+        // Usar requestAnimationFrame para mejorar el rendimiento
+        if (animationFrame.current) {
+            cancelAnimationFrame(animationFrame.current);
+        }
+        animationFrame.current = requestAnimationFrame(drawTemporaryRectangles);
+        // setVerCoordenadas(() => [{ ...currentRect.current }]);
+        // Dibujar en tiempo real
+        // drawTemporaryRectangles();  
+        // console.log(e.clientX, e.clientY, left, top, "VER COORDENADAS-------------", endX, endY)
+        // console.log(currentRect.current, "SOLO VIOSUALIZAMOS")
+        // drawTemporaryRectangles();
+        // window.addEventListener("mouseup", handleMouseUp);
+        
+    };
+
+   
+    const handleMouseUp = () => {
+        window.removeEventListener("mousemove", handleMouseMove);
+        window.removeEventListener("mouseup", handleMouseUp);
+        
+        if (currentRect.current) {
+            const newRect = [
+                currentRect.current.startY,
+                currentRect.current.startX,
+                currentRect.current.endY,
+                currentRect.current.endX
+            ];
+    
+            // setChecked((prevChecked) => {
+
+            //     if (prevChecked === true) {
+            //         setVariableTabla((prevVariableTabla) => [...prevVariableTabla, newRect]);
+            //         console.log("VER SI SE REPITEEEEEEEEEEEEEEE")
+            //     } else {
+            //         setVariableFija((prevVariableFija) => [...prevVariableFija, newRect]);
+            //     }
+            //     return prevChecked;
+            // });
+            setChecked((prevChecked) => {
+                // Solo agregar las coordenadas si es necesario, evitando duplicaciones
+                if (prevChecked === true) {
+                    setVariableTabla((prevVariableTabla) => {
+                        if (!prevVariableTabla.some(rect => JSON.stringify(rect) === JSON.stringify(newRect))) {
+                            console.log("VER SI SE REPITEEEEEEEEEEEEEEE");
+                            return [...prevVariableTabla, newRect];
+                        }
+                        return prevVariableTabla;
+                    });
+                } else {
+                    setVariableFija((prevVariableFija) => {
+                        if (!prevVariableFija.some(rect => JSON.stringify(rect) === JSON.stringify(newRect))) {
+                            return [...prevVariableFija, newRect];
+                        }
+                        return prevVariableFija;
+                    });
+                }
+                return prevChecked;
+            });
+    
+            currentRect.current = null;
+        }
+    
+        // // Asegura que el PDF se renderiza después de actualizar el estado
+        // setTimeout(() => {
+        //     if (pdf) {
+        //         renderPage(pdf, pageNumber);
+        //     }
+        // }, 0);
+        // Redibujar los rectángulos sin esperar a renderizar la página completa
+        drawTemporaryRectangles();
+        // handleMouseUp();
+    };
+    
+
+    const handleMouseDown = (e) => {
+        e.preventDefault();
+        const { left, top } = pdfCanvasRef.current.getBoundingClientRect();
+        const startX = (e.clientX - left) / scale;
+        const startY = (e.clientY - top) / scale;
+
+        currentRect.current = { startX, startY, endX: startX, endY: startY };
+        // console.log(e.clientX, e.clientY, left, top, "VERRRRRRRRRRROOOOOOOOO RRRROOOOOOIIIIISSSSS-------------", endX, endY)
+
+        // Agregar eventos
+        window.addEventListener("mousemove", handleMouseMove);
+        window.addEventListener("mouseup", handleMouseUp);
+        // handleMouseMove();
+        // handleMouseUp();
+    };
+
+    
+
+
+    // Nueva función para dibujar los rectángulos sin volver a renderizar el PDF
+    // const drawTemporaryRectangles = () => {
+    //     const canvas = pdfCanvasRef.current;
+    //     const context = canvas.getContext("2d");
+
+    //     // Limpiar el canvas y volver a renderizar la imagen actual del PDF
+    //     renderPage(pdf, pageNumber).then(() => {
+    //         // Dibujar rectángulos sin borrar el PDF renderizado
+    //         // context.clearRect(0, 0, canvas.width, canvas.height);
+    //         // Dibujar todos los rectángulos
+    //         drawRectangles(context, variableFijas, 'rgba(0, 0, 255, 0.5)', 1);
+    //         drawRectangles(context, variableTabla, 'rgba(0, 255, 0, 0.3)', 1);
+
+    //         // Dibujar el rectángulo en tiempo real (si hay uno en curso)
+    //         if (currentRect.current) {
+    //             drawRectangles(context, [currentRect.current], 'rgba(247, 0, 255, 0.5)', 1);
+    //         }
+    //     });
+    // };
+
+    const drawTemporaryRectangles = () => {
+        const canvas = pdfCanvasRef.current;
+        const context = canvas.getContext("2d");
+
+        // Limpiar el canvas y redibujar la imagen del PDF
+        const img = new Image();
+        img.onload = () => {
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            context.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            // Dibujar todos los rectángulos
+            drawRectangles(context, variableFijas, 'rgba(0, 0, 255, 0.5)');
+            drawRectangles(context, variableTabla, 'rgba(0, 255, 0, 0.3)');
+
+            // Dibujar el rectángulo en tiempo real (si hay uno en curso)
+            if (currentRect.current) {
+                drawRectangles(context, [currentRect.current], 'rgba(247, 0, 255, 0.5)');
+            }
+        };
+        img.src = pdfImageRef.current;
+    };
+    const DataEnvio_COORDENADAS = async () => {
+        try {
+            // Asegúrate de que los valores estén vacíos antes de procesar
+            // console.log("aaaa", base64, "AAAA", b64, "BBB")
+            // areaTabla = [209.45, 26.60, 594.85, 592.13];
+            // const areaFijas = [
+            //     [35.61, 487.40, 50.27, 551.28],
+            //     [104.73, 454.94, 116.25, 501.02],
+            //     [104.73, 516.51, 117.29, 582.49],
+            //     [129.86, 74.78, 148.71, 153.32],
+            //     [146.62, 77.71, 158.14, 122.74],
+            //     [162.33, 71.63, 179.08, 246.53],
+            //     [134.05, 380.58, 148.71, 417.23],
+            //     [146.62, 373.04, 158.14, 567.83],
+            //     [156.04, 377.44, 170.71, 442.37],
+            //     [167.56, 375.34, 180.13, 419.33],
+            //     [178.87, 371.99, 193.54, 404.46],
+            //     [192.70, 369.90, 204.22, 413.88]
+            // ];
+            // console.log(rects, "currentRect", JSON.stringify(JSON.parse(Object.values(rects))), "reacts")
+            // const array = [rects.startX, rects.startY, rects.endX, rects.endY];
+            // console.log(variableTabla, "PRUEBAS")
+            const enviaCoordenadasJSON = {
+                base64: base64,
+                area_tabla: variableTabla,
+                // area_CABECERA: fijasData
+                area_CABECERA: variableFijas
+            };
+
+            console.log(enviaCoordenadasJSON, "enviaCoordenadasJSON");
+
+            // Ahora que el archivo está en base64, lo enviamos a la API
+            const lstCatalogo = await postCoordenadas(JSON.parse(JSON.stringify(enviaCoordenadasJSON)));
+            console.log(lstCatalogo, "HACINEOD PRUEBASA MNABSDKJHAJHDSJKHSDJKAHU")
+            if (lstCatalogo !== undefined) {
+                if (lstCatalogo.status === 200 || lstCatalogo.status === 204 || lstCatalogo.status === 202) {
+                    console.log(lstCatalogo.data.resultado, "PRUEBASSSS");
+                    setTableData(lstCatalogo.data.resultado)
+                    // setDataHADA(lstCatalogo.data);
+                } else {
+                    console.log('Hubo un error al cargar el archivo ');
+                    return null;
+                }
+            }
+            return null;
+
+        } catch (error) {
+            console.log(error);
+            const response = error.message;
+            console.log('NO SE LOGRÓ SUBIR EL ARCHIVO', response);
+            return null;
+        }
+    };
+
+    const loadPdf = async (archivo_pdf) => {
+        try {
+            // // **Remover eventos antiguos en el canvas**
+            // const oldCanvas = pdfCanvasRef.current;
+            // if (oldCanvas) {
+            //     oldCanvas.replaceWith(oldCanvas.cloneNode(true)); // Clona y reemplaza para eliminar eventos previos
+            // }
+
+            // **Cancelar cualquier renderizado en progreso**
+            if (renderTaskRef.current) {
+                renderTaskRef.current.cancel();
+            }
+    
+            
+    
+            // **Resetear estados para limpiar el PDF anterior**
+            setPdf(null);  // Limpiar referencia al PDF anterior
+            setPageNumber(1); // Reiniciar página a la primera
+            setVariableFija([]); 
+            setVariableTabla([]);
+            setVerCoordenadas([]);
+            currentRect.current = null;
+            
+            // **Limpiar canvas antes de cargar un nuevo PDF**
+            const canvas = pdfCanvasRef.current;
+            if (canvas) {
+                const context = canvas.getContext("2d");
+                context.clearRect(0, 0, canvas.width, canvas.height);
+            }
+            
+
+            // **Cargar el nuevo PDF**
+            const loadingTask = pdfjsLib.getDocument(archivo_pdf);
+            const pdfDoc = await loadingTask.promise;
+            setPdf(pdfDoc);
+            setTotalPages(pdfDoc.numPages);  // **Establecer total de páginas**
+
+            // **Renderizar la primera página del nuevo PDF**
+            renderPage(pdfDoc, 1);
+        } catch (error) {
+            console.error("Error al cargar el PDF:", error);
+        }
+    };
+    
+    const dibujarRecuadroGuia = (context, startX, startY, endX, endY, scale) => {
+        if (!context) return; // Asegura que el contexto del canvas esté disponible
+    
+        context.strokeStyle = 'rgba(255, 0, 0, 0.8)'; // Color del borde del recuadro (rojo con opacidad)
+        context.lineWidth = 2; // Ancho del borde
+        context.setLineDash([5, 5]); // Estilo de línea punteada
+    
+        // Calcula las dimensiones del recuadro
+        const width = (endX - startX) * scale;
+        const height = (endY - startY) * scale;
+    
+        // Dibuja el recuadro
+        context.strokeRect(startX * scale, startY * scale, width, height);
+    
+        // Restablece el estilo de línea para futuras operaciones de dibujo
+        context.setLineDash([]);
+    };
+
+    // const handleDescargarIco = (estado, parametro) => () => {
+    //     if (parametro !== hoverDescargar.parametro) {
+    //         setHoverDescargar({ estado: true, parametro: parametro });
+    //         console.log({ estado: true, parametro: parametro }, "AAAAAAAA")
+    //     }
+    //     else {
+    //         setHoverDescargar({ estado: !estado, parametro: parametro });
+    //         console.log({ estado: !estado, parametro: parametro }, "DIFERENTEEEEEEEEEEE")
+
+    //     }
+    // };
+
+    // const [hoverDescargar, setHoverDescargar] = useState({ estado: false, parametro: '' });
+
+    useEffect(() => {
+        drawTemporaryRectangles();
+        return () => {
+            if (animationFrame.current) {
+                cancelAnimationFrame(animationFrame.current);
+            }
+        };
+    }, [variableFijas, variableTabla, currentRect.current]); // Se ejecuta cuando cambia alguna de estas variables / Redibujar con cambios
+    
+
+
+    useEffect(() => {
+        loadPdf(file);
+    }, []);
+
+    useEffect(() => {
+        if (pdf) {
+            renderPage(pdf, pageNumber);
+        }
+    }, [pdf, pageNumber]);
+    
+    useEffect(()=>{
+        drawTemporaryRectangles();
+
+    // },[variableFijas,variableTabla, currentRect.current])
+    },[variableFijas,variableTabla])
+
+    const toggleSwitch = () => {
+        setChecked(prev => !prev); // Invierte el estado
+        console.log("Nuevo estado:", !checked); // Esto puede imprimir un valor desfasado
+    };
+    useEffect(() => {
+        console.log("Estado actualizado:", checked);
+    }, [checked]);
+
+
+
+
+    return (
+        <Container sx={{
+            width: '100%'
+        }}>
+            <Box sx={{ display: "flex", flexDirection: "column", width: "100%", gap: 2 }}>
+                {/* Contenedor principal */}
+                <Box sx={{ display: "flex", width: "100%", gap: 2 }}>
+                    {/* Lado izquierdo: PDF */}
+                    <Box ref={containerRef} sx={{ display: "flex", position: "relative", overflow: "auto", height: "90vh", border: "1px solid gray", width: "100%" }}>
+                        <canvas ref={pdfCanvasRef} style={{ display: "block" }} onMouseDown={handleMouseDown}></canvas>
+                        {/* Rectángulos seleccionados */}
+                        {verCoordenadas.map((rect, index) => (
+                            <div
+                                key={index}
+                                style={{
+                                    position: "absolute",
+                                    border: "2px dashed red",
+                                    left: rect.startX * scale,
+                                    top: rect.startY * scale,
+                                    width: (rect.endX - rect.startX) * scale,
+                                    height: (rect.endY - rect.startY) * scale,
+                                    backgroundColor: "rgba(255, 0, 0, 0.2)",
+                                    pointerEvents: "none"
+                                }}
+                            />
+                        ))}
+                    </Box>
+
+                    {/* Lado derecho: Tabla de datos */}
+
+                </Box>
+
+
+                {/* Controles de navegación de páginas */}
+                <Box sx={{ display: "flex", justifyContent: "center", gap: 2, marginTop: 1 }}>
+                    <Button onClick={() => setPageNumber(pageNumber - 1)} disabled={pageNumber === 1}>Página Anterior</Button>
+                    <span>Página {pageNumber} de {totalPages}</span>
+                    <Button onClick={() => setPageNumber(pageNumber + 1)} disabled={!pdf || pageNumber >= pdf.numPages}>Página Siguiente</Button>
+                </Box>
+
+                {/* Coordenadas extraídas */}
+                <Box sx={{ display: "flex", width: "100%", gap: 2 }}>
+                    {/* <Box sx={{ width: "100%" }}>
+                        <h3>Coordenadas Extraídas</h3>
+                        <ul style={{ maxHeight: "200px", overflowY: "auto", border: "1px solid gray", padding: "10px" }}>
+                            {rects.map((rect, index) => (
+                                <li key={index}>
+                                    Rect {index + 1}: [{rect.startY.toFixed(2)}, {rect.startX.toFixed(2)}, {rect.endY.toFixed(2)}, {rect.endX.toFixed(2)}]
+                                </li>
+                            ))}
+                        </ul>
+                    </Box> */}
+
+                    {/* Botones de acciones */}
+                    <Box sx={{ width: "100%", display: "flex", justifyContent: "center", gap: 1 }}>
+                        <Button component="label" variant="contained">
+                            Subir PDF
+                            <input type="file" hidden onChange={handleFileChange} />
+                        </Button>
+                        <Button onClick={DataEnvio_COORDENADAS} variant="contained" color="primary">Enviar Coordenadas</Button>
+                        <Button onClick={() => handleExport(JSON.parse(JSON.stringify(tableData)))}
+                            variant="contained" color="primary">Exportar a Excel</Button>
+
+                        {/* <Button onClick={() => { handleDescargarIco(hoverDescargar.estado, 'accion1');
+                             handleDescargarIco(hoverDescargar.estado, 'accion1') }} variant="contained" color="secondary">Fijas</Button>
+                        <Button onClick={handleDescargarIco(hoverDescargar.estado, 'accion2')} variant="contained" color="secondary">Tabla</Button> */}
+
+                        {/* <Button onClick={() => {
+                            setactivaVariableFijas(true); setactivaVariableTabla(false)
+                        }} variant="contained" color="secondary">Fijas</Button>
+                        <Button onClick={() => {
+                            setactivaVariableTabla(true); setactivaVariableFijas(false)
+                        }} variant="contained" color="secondary">Tabla</Button> */}
+                        <Switch
+                            checked={checked}
+                            onChange={toggleSwitch}
+                            inputProps={{ 'aria-label': 'controlled' }}
+                        />
+                    </Box>
+                </Box>
+
+                <Box sx={{ width: "100%", overflowX: "auto", height: "800px" }}>
+                    <h3>Tabla de Datos</h3>
+                    {tableData?.length > 0 && (
+                        <Box sx={{ width: "100%", overflowX: "auto" }}>
+
+                            <TableContainer sx={{ maxHeight: 700 }}>
+                                <Table stickyHeader aria-label="sticky table">
+                                    <TableHead>
+                                        {/* <TableRow>
+                                            {Object.values(tableData[0]).map((header, index) => (
+                                                <TableCell
+                                                    key={index}
+
+                                                >
+                                                    {header}
+                                                </TableCell>
+                                            ))}
+                                        </TableRow> */}
+                                    </TableHead>
+                                    {/* <TableBody>
+                                        {tableData.slice(1).map((row, rowIndex) => (
+                                            <TableRow key={rowIndex} sx={{ borderBottom: "1px solid gray" }}>
+                                                {Object.values(row).map((cell, cellIndex) => (
+                                                    <TableCell
+                                                        key={cellIndex}
+                                                        sx={{ padding: 1, borderRight: "1px solid gray" }}
+                                                    >
+                                                        {cell}
+                                                    </TableCell>
+                                                ))}
+                                            </TableRow>
+                                        ))}
+                                    </TableBody> */}
+                                    <TableBody>
+                                        {/* {tableData.slice(1).map((row, rowIndex) => ( */}
+                                        {tableData.slice(0).map((row, rowIndex) => (
+                                            <TableRow hover role="checkbox" tabIndex={-1} key={rowIndex}>
+                                                {Object.values(row).map((cell, cellIndex) => (
+                                                    <TableCell
+                                                        key={cellIndex}
+                                                        sx={{ padding: 1, borderRight: "1px solid gray" }}
+                                                    >
+                                                        {cell}
+                                                    </TableCell>
+                                                ))}
+                                            </TableRow>
+                                        ))}
+                                    </TableBody>
+                                </Table>
+                            </TableContainer>
+                        </Box>
+                    )}
+                </Box>
+            </Box>
+
+        </Container>
+    );
+};
+
+export default PDFSelector;
